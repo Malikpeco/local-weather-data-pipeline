@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
 using System.Text.Json;
 
 const string city = "Mostar";
@@ -12,6 +13,22 @@ string apiUrl =
     $"&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code";
 
 using var httpClient = new HttpClient();
+
+
+
+
+var configuration = new ConfigurationBuilder().AddJsonFile("appsettings.json").Build();
+string? connectionString = configuration.GetConnectionString("DefaultConnection");
+
+if(string.IsNullOrWhiteSpace(connectionString))
+{
+    Console.WriteLine("Database connection string not found.");
+    return;
+}    
+
+
+
+
 
 try
 {
@@ -46,36 +63,54 @@ try
         RecordedAtUtc = DateTime.UtcNow
     };
 
-    Console.WriteLine("Loading weather data into CSV...");
+    
+    Console.WriteLine("Loading weather data into SQL Server...");
+    await using var connection = new SqlConnection(connectionString);
+    await connection.OpenAsync();
 
-    const string filePath = "weather-readings.csv";
-    bool fileExists = File.Exists(filePath);
+    Console.WriteLine("Connected to SQL Server successfully.");
 
-    await using var writer = new StreamWriter(filePath, append: true);
+    string insertSql = """
+    INSERT INTO dbo.WeatherReadings
+    (
+        City,
+        TemperatureCelsius,
+        HumidityPercent,
+        WindSpeedKmh,
+        WeatherCode,
+        RecordedAtUtc
+    )
+    VALUES
+    (
+        @City,
+        @TemperatureCelsius,
+        @HumidityPercent,
+        @WindSpeedKmh,
+        @WeatherCode,
+        @RecordedAtUtc
+    );
+    """;
 
-    if (!fileExists)
-    {
-        await writer.WriteLineAsync(
-            "City,TemperatureCelsius,HumidityPercent,WindSpeedKmh,WeatherCode,RecordedAtUtc");
-    }
+    await using var command = new SqlCommand(insertSql, connection);
 
-    string csvLine = string.Join(",",
-        reading.City,
-        reading.TemperatureCelsius.ToString(CultureInfo.InvariantCulture),
-        reading.HumidityPercent,
-        reading.WindSpeedKmh.ToString(CultureInfo.InvariantCulture),
-        reading.WeatherCode,
-        reading.RecordedAtUtc.ToString("O"));
+    command.Parameters.AddWithValue("@City", reading.City);
+    command.Parameters.AddWithValue("@TemperatureCelsius", reading.TemperatureCelsius);
+    command.Parameters.AddWithValue("@HumidityPercent", reading.HumidityPercent);
+    command.Parameters.AddWithValue("@WindSpeedKmh", reading.WindSpeedKmh);
+    command.Parameters.AddWithValue("@WeatherCode", reading.WeatherCode);
+    command.Parameters.AddWithValue("@RecordedAtUtc", reading.RecordedAtUtc);
 
-    await writer.WriteLineAsync(csvLine);
+    await command.ExecuteNonQueryAsync();
+
+
 
     Console.WriteLine();
     Console.WriteLine("Pipeline completed successfully.");
     Console.WriteLine($"City: {reading.City}");
+    Console.WriteLine($"UTC Time: {reading.RecordedAtUtc}");
     Console.WriteLine($"Temperature: {reading.TemperatureCelsius} °C");
     Console.WriteLine($"Humidity: {reading.HumidityPercent}%");
     Console.WriteLine($"Wind speed: {reading.WindSpeedKmh} km/h");
-    Console.WriteLine($"Saved to: {Path.GetFullPath(filePath)}");
 }
 catch (HttpRequestException exception)
 {
@@ -85,9 +120,9 @@ catch (JsonException exception)
 {
     Console.WriteLine($"Could not parse API response: {exception.Message}");
 }
-catch (IOException exception)
+catch (SqlException exception)
 {
-    Console.WriteLine($"Could not write the CSV file: {exception.Message}");
+    Console.WriteLine($"Database operation failed: {exception.Message}");
 }
 
 public class OpenMeteoResponse
